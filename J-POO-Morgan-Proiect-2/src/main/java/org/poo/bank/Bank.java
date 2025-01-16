@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.Getter;
 import org.poo.bank.account.Account;
 import org.poo.bank.account.AccountFactory;
+import org.poo.bank.account.TransactionInfo;
 import org.poo.bank.card.Card;
 import org.poo.bank.commerciante.Commerciante;
 import org.poo.bank.commerciante.NumberOfTransactionsStrategy;
@@ -19,6 +20,7 @@ import org.poo.fileio.UserInput;
 import java.time.LocalDate;
 import java.time.Period;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Represents a singleton class that models a bank, managing users, accounts,
@@ -36,6 +38,7 @@ public final class Bank {
     private final Map<String, String> aliasesToIBAN;
     private final Map<String, User> usersByIBAN;
     private final Map<String, Commerciante> commerciantesByName;
+    private final Map<String, Commerciante> commerciantesByIBAN;
 
     private Bank() {
         usersByEmail = new LinkedHashMap<>();
@@ -45,6 +48,7 @@ public final class Bank {
         usersByIBAN = new HashMap<>();
         accountsByIBAN = new HashMap<>();
         commerciantesByName = new HashMap<>();
+        commerciantesByIBAN = new HashMap<>();
     }
 
 
@@ -68,15 +72,17 @@ public final class Bank {
      * @param rates        the array of exchange rates to configure.
      * @param commerciants the array of commerciant inputs to initialize.
      */
-    public void initializeBank(final UserInput[] users, final ExchangeInput[] rates, final CommerciantInput[] commerciants) {
+    public void initializeBank(final UserInput[] users, final ExchangeInput[] rates,
+                               final CommerciantInput[] commerciants) {
         this.usersByEmail.clear();
         this.exchangeRates.clear();
         this.usersByIBAN.clear();
         this.accountsByIBAN.clear();
         this.aliasesToIBAN.clear();
         this.commerciantesByName.clear();
+        this.commerciantesByIBAN.clear();
+
         SpendingThresholdStrategy.getSpendingInfo().clear();
-        NumberOfTransactionsStrategy.getCashbackReceived().clear();
         NumberOfTransactionsStrategy.getNoTransactions().clear();
 
         for (final UserInput user : users) {
@@ -84,7 +90,9 @@ public final class Bank {
         }
 
         for (final CommerciantInput commerciant : commerciants) {
-            this.commerciantesByName.put(commerciant.getCommerciant(), new Commerciante(commerciant));
+            final Commerciante c = new Commerciante(commerciant);
+            this.commerciantesByName.put(commerciant.getCommerciant(), c);
+            this.commerciantesByIBAN.put(commerciant.getAccount(), c);
         }
 
         // add direct rates
@@ -140,11 +148,12 @@ public final class Bank {
     public void addAccount(final String email, final String currency,
                            final String accountType, final double interestRate,
                            final int timestamp) {
-        final Account account = AccountFactory.createAccount(currency, accountType, interestRate);
-
+        final Account account = AccountFactory.createAccount(currency, accountType, interestRate,
+                email);
         final User user = usersByEmail.get(email);
-        usersByIBAN.put(account.getIban(), user);
+
         accountsByIBAN.put(account.getIban(), account);
+        usersByIBAN.put(account.getIban(), user);
         user.addAccount(account, timestamp);
     }
 
@@ -220,16 +229,13 @@ public final class Bank {
         user.createOneTimeCard(iban, timestamp);
     }
 
-
-    /**
-     * Adds funds to the specified account.
-     *
-     * @param iban   the IBAN of the account.
-     * @param amount the amount to add.
-     */
-    public void addFunds(final String iban, final double amount) {
+    public void addFunds(final String iban, final double amount, final String email, final int timestamp) {
+        final User user = usersByEmail.get(email);
         Account account = accountsByIBAN.get(iban);
-        account.addFunds(amount);
+        final boolean can = account.addFunds(amount, user, timestamp);
+        if (can) {
+            account.increaseBalance(amount);
+        }
     }
 
 
@@ -284,10 +290,15 @@ public final class Bank {
                             final double amount, final String currency,
                             final String description, final String commerciante,
                             final int timestamp) {
+        if (amount == 0.0) {
+            return null;
+        }
+
         final User user = usersByEmail.get(email);
 
         try {
-            user.payOnline(cardNumber, amount, currency, timestamp, commerciantesByName.get(commerciante));
+            user.payOnline(cardNumber, amount, currency, timestamp,
+                    commerciantesByName.get(commerciante));
         } catch (CardNotFoundException e) {
             return e.getMessage();
         }
@@ -316,67 +327,49 @@ public final class Bank {
 
         final Account receiverAccount = accountsByIBAN.get(aliasesToIBAN
                 .getOrDefault(receiverIBAN, receiverIBAN));
-        if (receiverAccount == null) {
+        if (receiverAccount == null && commerciantesByIBAN.get(receiverIBAN) == null) {
             return "User not found";
         }
 
         final User user = usersByIBAN.get(senderIBAN);
         user.sendMoney(senderIBAN, usersByIBAN.get(receiverIBAN),
-                receiverAccount, receiverIBAN, amount, timestamp, description);
+                receiverAccount, commerciantesByIBAN.get(receiverIBAN), receiverIBAN,
+                amount, timestamp, description);
         return null;
     }
 
 
-    /**
-     * Processes a split payment across multiple accounts.
-     *
-     * @param ibans     the list of IBANs to split the payment across.
-     * @param amount    the total amount to split.
-     * @param currency  the currency of the payment.
-     * @param timestamp the timestamp of the transaction.
-     */
-    public void splitPayment(final List<String> ibans, final double amount,
+    public void splitPayment(final List<String> ibans, final String splitPaymentType,
+                             final List<Double> amounts, final double amount,
                              final String currency, final int timestamp) {
-        final List<Double> sumsToPay = new ArrayList<>();
-        double splitAmount = amount / ibans.size();
+        final SplitPayment.SplitPaymentBuilder splitBuilder
+                = new SplitPayment.SplitPaymentBuilder();
+        splitBuilder.setTotalAmount(amount);
+        splitBuilder.setCurrency(currency);
+        splitBuilder.setType(splitPaymentType);
+        splitBuilder.setTimestamp(timestamp);
 
-        boolean canPay = true;
-        String cantPayAccount = null;
-        for (final String iban : ibans) {
-            final Account account = accountsByIBAN.get(iban);
-            final String accountCurrency = account.getCurrency();
-            double individualSplitAmount = splitAmount;
-            if (!accountCurrency.equals(currency)) {
-                individualSplitAmount = convertCurrency(individualSplitAmount,
-                        currency, accountCurrency);
-            }
-
-            if (individualSplitAmount > account.getBalance()) {
-                canPay = false;
-                cantPayAccount = iban;
-            }
-            sumsToPay.add(individualSplitAmount);
+        double splitAmount = 0.0;
+        if (splitPaymentType.equals("equal")) {
+            splitAmount = amount / ibans.size();
+            splitBuilder.addAmount(splitAmount);
         }
 
-        final String description = "Split payment of " + String.format("%.2f", amount)
-                + " " + currency;
-        if (canPay) {
-            for (int i = 0; i < sumsToPay.size(); i++) {
-                final User user = usersByIBAN.get(ibans.get(i));
-
-                double individualSplitAmount = sumsToPay.get(i);
-                user.splitPay(ibans.get(i), individualSplitAmount,
-                        splitAmount, currency, ibans, description, timestamp);
+        for (int i = 0; i < ibans.size(); i++) {
+            final String iban = ibans.get(i);
+            final User user = usersByIBAN.get(ibans.get(i));
+            if (splitAmount == 0.0) {
+                splitBuilder.addAmount(amounts.get(i));
             }
-        } else {
-            final String error = "Account " + cantPayAccount
-                    + " has insufficient funds for a split payment.";
-            for (int i = 0; i < sumsToPay.size(); i++) {
-                final User user = usersByIBAN.get(ibans.get(i));
 
-                user.addTransaction(new SplitPaymentTransaction(timestamp, description, splitAmount,
-                        currency, ibans, error, ibans.get(i)));
-            }
+            splitBuilder.addIBAN(iban);
+            splitBuilder.addUser(user);
+        }
+
+        final SplitPayment splitPayment = splitBuilder.build();
+        for (final String iban : ibans) {
+            final User user = usersByIBAN.get(iban);
+            user.addSplitPayment(splitPayment);
         }
     }
 
@@ -431,7 +424,8 @@ public final class Bank {
 
         try {
             final double amount = account.addInterest();
-            user.addTransaction(new InterestRateTransaction(timestamp, iban, amount, account.getCurrency()));
+            user.addTransaction(new InterestRateTransaction(timestamp, iban,
+                    amount, account.getCurrency()));
             return null;
         } catch (NotSavingsAccountException e) {
             return e.getMessage();
@@ -462,7 +456,7 @@ public final class Bank {
         final List<Transaction> filteredTransactions = new ArrayList<>();
         for (final Transaction t : transactions) {
             if (!filteredTransactions.isEmpty()) {
-                final Transaction lastT = filteredTransactions.get(filteredTransactions.size() - 1);
+                final Transaction lastT = filteredTransactions.getLast();
                 if (t == lastT) {
                     continue;
                 }
@@ -568,7 +562,8 @@ public final class Bank {
         final LocalDate birthDate = LocalDate.parse(user.getBirthDate());
         final int age = Period.between(birthDate, LocalDate.now()).getYears();
         if (age < 21) {
-            user.addTransaction(new Transaction(timestamp, "You don't have the minimum age required.", iban));
+            user.addTransaction(new Transaction(timestamp,
+                    "You don't have the minimum age required.", iban));
             return;
         }
 
@@ -581,14 +576,25 @@ public final class Bank {
         }
 
         if (destAccount == null) {
-            user.addTransaction(new Transaction(timestamp, "You do not have a classic account.", iban));
+            user.addTransaction(new Transaction(timestamp,
+                    "You do not have a classic account.", iban));
             return;
         }
 
-        destAccount.addFunds(amount);
+        final double withdrawAmount = Bank.getInstance().convertCurrency(amount,
+                currency, account.getCurrency());
 
-        final double withdrawAmount = Bank.getInstance().convertCurrency(amount, currency, account.getCurrency());
-        account.removeFunds(withdrawAmount);
+        if (account.getBalance() < withdrawAmount) {
+            return;
+        }
+
+        destAccount.increaseBalance(amount);
+        account.decreaseBalance(withdrawAmount);
+
+        user.addTransaction(new SavingsWithdrawTransaction(timestamp,
+                destAccount.getIban(), iban, amount));
+        user.addTransaction(new SavingsWithdrawTransaction(timestamp,
+                destAccount.getIban(), iban, amount));
     }
 
     public String upgradePlan(final String iban, final String planType, final int timestamp) {
@@ -598,45 +604,177 @@ public final class Bank {
             return "Account not found";
         }
 
-        final String currentPlan = user.getPlanName();
+        user.upgradePlan(iban, planType, timestamp);
 
-        if (planType.equals(currentPlan)) {
-            return "The user already has the " + planType + " plan.";
-        }
+        return null;
+    }
 
-        switch (currentPlan) {
-            case "silver":
-                if (planType.equals("standard") || planType.equals("student"))
-                    return "You cannot downgrade your plan.";
-            case "gold":
-                if (planType.equals("standard") || planType.equals("student") || planType.equals("silver"))
-                    return "You cannot downgrade your plan.";
+    /**
+     * Handles a cash withdrawal operation for a user.
+     * It retrieves the user by email, performs the withdrawal operation on the user's account,
+     * and handles any potential errors such as a card not being found or being frozen.
+     *
+     * @param email     The email of the user performing the withdrawal.
+     * @param card      The card used for the withdrawal.
+     * @param amount    The amount to withdraw.
+     * @param timestamp The timestamp of the withdrawal operation.
+     * @return A message indicating the result of the operation, or {@code null} if successful.
+     * Possible messages include "User not found" or the exception message
+     * in case of errors.
+     */
+    public String cashWithdrawal(final String email, final String card, final double amount,
+                                 final int timestamp) {
+        final User user = usersByEmail.get(email);
+
+        if (user == null) {
+            return "User not found";
         }
 
         try {
-            user.upgradePlan(iban, planType, timestamp);
-        } catch (InsufficientFundsException e) {
+            user.cashWithdrawal(card, amount, timestamp);
+        } catch (CardNotFoundException | CardFrozenException e) {
             return e.getMessage();
         }
 
         return null;
     }
 
-    public String cashWithdrawal(final String email, final String card, final double amount, final int timestamp) {
+    public String acceptSplitPayment(final String email) {
         final User user = usersByEmail.get(email);
 
-        if (user == null)
+        if (user == null) {
             return "User not found";
+        }
 
+        user.acceptSplitPayment();
+
+        return null;
+    }
+
+    public String rejectSplitPayment(final String email) {
+        final User user = usersByEmail.get(email);
+
+        if (user == null) {
+            return "User not found";
+        }
+
+        user.rejectSplitPayment();
+
+        return null;
+    }
+
+    public void addNewBusinessAssociate(final String iban, final String role, final String email) {
+        final Account account = accountsByIBAN.get(iban);
+        final User user = usersByEmail.get(email);
+
+        switch (role) {
+            case "employee":
+                account.addEmployee(email);
+                break;
+            case "manager":
+                account.addManager(email);
+                break;
+            default:
+                break;
+        }
+
+        user.addAccount(account, -1);
+    }
+
+    public String changeSpendingLimit(final String iban, final String email, final double limit) {
+        final Account account = accountsByIBAN.get(iban);
         try {
-            user.cashWithdrawal(card, amount, timestamp);
-        } catch (CardNotFoundException | CardFrozenException e) {
-            return e.getMessage();
-        } catch (InsufficientFundsException e) {
-            return null;
+            account.changeSpendingLimit(email, limit);
+        } catch (final UnsupportedOperationException e) {
+            return "This is not a business account";
+        } catch (final NotAuthorizedException e) {
+            return "You must be owner in order to change spending limit.";
         }
 
         return null;
+    }
+
+    public String changeDepositLimit(final String iban, final String email, final double limit) {
+        final Account account = accountsByIBAN.get(iban);
+        try {
+            account.changeDepositLimit(email, limit);
+        } catch (final UnsupportedOperationException e) {
+            return "This is not a business account";
+        } catch (final NotAuthorizedException e) {
+            return "You must be owner in order to change spending limit.";
+        }
+
+        return null;
+    }
+
+    public ObjectNode businessReport(final ObjectMapper objectMapper, final String type,
+                                     final int startTimestamp, final int endTimestamp,
+                                     final String iban) {
+        final Account account = accountsByIBAN.get(iban);
+
+        final ObjectNode resultNode = objectMapper.createObjectNode();
+
+        resultNode.put("IBAN", account.getIban());
+        resultNode.put("balance", account.getBalance());
+        resultNode.put("currency", account.getCurrency());
+        resultNode.put("spending limit", account.getSpendingLimit());
+        resultNode.put("deposit limit", account.getDepostLimit());
+
+        double totalDeposited = 0.0;
+        double totalSpent = 0.0;
+        final Map<String, Double> deposited = new HashMap<>();
+        final Map<String, Double> spent = new HashMap<>();
+        for (final TransactionInfo transactionInfo : account.getTransasctionInfo()) {
+            final int timestamp = transactionInfo.getTimestamp();
+            if (timestamp < startTimestamp || timestamp > endTimestamp) {
+                continue;
+            }
+
+            final String username = transactionInfo.getUsername();
+            final double amount = transactionInfo.getAmount();
+
+            if (amount < 0) {
+                totalSpent -= amount;
+                spent.put(username, spent.getOrDefault(username, 0.0) - amount);
+            } else {
+                totalDeposited += amount;
+                deposited.put(username, deposited.getOrDefault(username, 0.0) + amount);
+            }
+        }
+
+        final ArrayNode employeesArr = objectMapper.createArrayNode();
+        for (final String employee : account.getEmployees().stream().sorted().toList()) {
+            final User user = usersByEmail.get(employee);
+            final String username = user.getLastName() + " " + user.getFirstName();
+
+            final ObjectNode node = objectMapper.createObjectNode();
+            node.put("deposited", deposited.getOrDefault(username, 0.0));
+            node.put("spent", spent.getOrDefault(username, 0.0));
+            node.put("username", username);
+
+            employeesArr.add(node);
+        }
+
+        final ArrayNode managersArr = objectMapper.createArrayNode();
+        for (final String manager : account.getManagers().stream().sorted().toList()) {
+            final User user = usersByEmail.get(manager);
+            final String username = user.getLastName() + " " + user.getFirstName();
+
+            final ObjectNode node = objectMapper.createObjectNode();
+            node.put("deposited", deposited.getOrDefault(username, 0.0));
+            node.put("spent", spent.getOrDefault(username, 0.0));
+            node.put("username", username);
+
+            managersArr.add(node);
+        }
+
+        resultNode.set("employees", employeesArr);
+        resultNode.set("managers", managersArr);
+        resultNode.put("statistics type", type);
+        resultNode.put("total deposited", totalDeposited);
+        resultNode.put("total spent", totalSpent);
+
+        return resultNode;
     }
 
     /**
@@ -660,6 +798,9 @@ public final class Bank {
         return new ArrayList<>(usersByEmail.values());
     }
 
+    public User getUserByEmail(final String email) {
+        return usersByEmail.get(email);
+    }
 
     /**
      * Retrieves the transaction history for a specific user.
@@ -670,6 +811,9 @@ public final class Bank {
     public List<Transaction> getTransactions(final String email) {
         final User user = usersByEmail.get(email);
 
-        return user.getTransactions();
+        final List<Transaction> transactions = new ArrayList<>(user.getTransactions());
+        transactions.sort(Comparator.comparingInt(Transaction::getTimestamp));
+
+        return transactions;
     }
 }

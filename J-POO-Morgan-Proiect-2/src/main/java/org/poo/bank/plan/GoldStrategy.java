@@ -1,13 +1,13 @@
 package org.poo.bank.plan;
 
-public class GoldStrategy implements PlanStrategy {
+public final class GoldStrategy implements PlanStrategy {
     @Override
     public String name() {
         return "gold";
     }
 
     @Override
-    public double getComision(double amount) {
+    public double getComision(final double amount) {
         return 0;
     }
 }

@@ -5,7 +5,7 @@ import org.poo.bank.account.Account;
 import org.poo.fileio.CommerciantInput;
 
 
-public class Commerciante {
+public final class Commerciante {
     @Getter
     private final String name;
     private final int id;
@@ -21,10 +21,11 @@ public class Commerciante {
         this.id = id;
         this.iban = iban;
         this.type = type;
-        if (cashbackType.equals("nrOfTransactions"))
+        if (cashbackType.equals("nrOfTransactions")) {
             this.cashback = new NumberOfTransactionsStrategy();
-        else
+        } else {
             this.cashback = new SpendingThresholdStrategy();
+        }
     }
 
     public Commerciante(final CommerciantInput commerciantInput) {

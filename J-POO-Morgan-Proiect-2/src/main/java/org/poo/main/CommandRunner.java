@@ -18,6 +18,21 @@ public final class CommandRunner {
         this.objectMapper = objectMapper;
     }
 
+    /**
+     * Executes a command based on the input provided. This method acts as a command dispatcher,
+     * directing each command to the corresponding handler method. It utilizes a switch expression
+     * to handle different banking-related operations such as creating accounts, cards,
+     * transactions, and managing user finances.
+     *
+     * @param commandInput the input object containing the command to be executed
+     *                     and relevant parameters.
+     *                     This object encapsulates the details required for executing the command.
+     * @return an {@link ObjectNode} representing the result of the executed command.
+     * The returned node typically contains status information, operation results,
+     * or error messages.
+     * @throws IllegalStateException if the command provided is not recognized or supported.
+     *                               This ensures that unhandled commands do not silently fail.
+     */
     public ObjectNode executeCommand(final CommandInput commandInput) {
         return switch (commandInput.getCommand()) {
             case "printUsers" -> printUsers(commandInput);
@@ -42,6 +57,11 @@ public final class CommandRunner {
             case "upgradePlan" -> upgradePlan(commandInput);
             case "cashWithdrawal" -> cashWithdrawal(commandInput);
             case "acceptSplitPayment" -> acceptSplitPayment(commandInput);
+            case "rejectSplitPayment" -> rejectSplitPayment(commandInput);
+            case "addNewBusinessAssociate" -> addNewBusinessAssociate(commandInput);
+            case "changeSpendingLimit" -> changeSpendingLimit(commandInput);
+            case "changeDepositLimit" -> changeDepositLimit(commandInput);
+            case "businessReport" -> businessReport(commandInput);
             default -> throw new IllegalStateException("Unexpected value: "
                     + commandInput.getCommand());
         };
@@ -97,8 +117,10 @@ public final class CommandRunner {
     private ObjectNode addFunds(final CommandInput commandInput) {
         final String iban = commandInput.getAccount();
         final double amount = commandInput.getAmount();
+        final String email = commandInput.getEmail();
+        final int timestamp = commandInput.getTimestamp();
 
-        Bank.getInstance().addFunds(iban, amount);
+        Bank.getInstance().addFunds(iban, amount, email, timestamp);
 
         return null;
     }
@@ -225,9 +247,11 @@ public final class CommandRunner {
         final String description = commandInput.getDescription();
         final int timestamp = commandInput.getTimestamp();
 
-        final String result = Bank.getInstance().sendMoney(iban, receiver, amount, description, timestamp);
-        if (result == null)
+        final String result = Bank.getInstance().sendMoney(iban, receiver, amount, description,
+                timestamp);
+        if (result == null) {
             return null;
+        }
 
         final ObjectNode resultNode = objectMapper.createObjectNode();
         resultNode.put("command", "sendMoney");
@@ -280,20 +304,20 @@ public final class CommandRunner {
         final int timestamp = commandInput.getTimestamp();
 
         final String result = Bank.getInstance().changeInterestRate(iban, interestRate, timestamp);
-        if (result != null) {
-            final ObjectNode resultNode = objectMapper.createObjectNode();
-            resultNode.put("command", "changeInterestRate");
-            final ObjectNode node = objectMapper.createObjectNode();
-
-            node.put("description", result);
-            node.put("timestamp", timestamp);
-            resultNode.set("output", node);
-            resultNode.put("timestamp", timestamp);
-
-            return resultNode;
+        if (result == null) {
+            return null;
         }
 
-        return null;
+        final ObjectNode resultNode = objectMapper.createObjectNode();
+        resultNode.put("command", "changeInterestRate");
+        final ObjectNode node = objectMapper.createObjectNode();
+
+        node.put("description", result);
+        node.put("timestamp", timestamp);
+        resultNode.set("output", node);
+        resultNode.put("timestamp", timestamp);
+
+        return resultNode;
     }
 
     private ObjectNode splitPayment(final CommandInput commandInput) {
@@ -301,8 +325,11 @@ public final class CommandRunner {
         final int timestamp = commandInput.getTimestamp();
         final String currency = commandInput.getCurrency();
         final double amount = commandInput.getAmount();
+        final String splitPaymentType = commandInput.getSplitPaymentType();
+        final List<Double> amounts = commandInput.getAmountForUsers();
 
-        Bank.getInstance().splitPayment(accounts, amount, currency, timestamp);
+        Bank.getInstance().splitPayment(accounts, splitPaymentType, amounts, amount, currency,
+                timestamp);
 
         return null;
     }
@@ -371,22 +398,22 @@ public final class CommandRunner {
 
         final String result = Bank.getInstance().upgradePlan(iban, planType, timestamp);
 
-        if (result != null) {
-            final ObjectNode resultNode = objectMapper.createObjectNode();
-            resultNode.put("command", "upgradePlan");
-
-            final ObjectNode outputNode = objectMapper.createObjectNode();
-            outputNode.put("timestamp", timestamp);
-            outputNode.put("description", result);
-
-            resultNode.set("output", outputNode);
-
-            resultNode.put("timestamp", timestamp);
-
-            return resultNode;
+        if (result == null) {
+            return null;
         }
 
-        return null;
+        final ObjectNode resultNode = objectMapper.createObjectNode();
+        resultNode.put("command", "upgradePlan");
+
+        final ObjectNode outputNode = objectMapper.createObjectNode();
+        outputNode.put("timestamp", timestamp);
+        outputNode.put("description", result);
+
+        resultNode.set("output", outputNode);
+
+        resultNode.put("timestamp", timestamp);
+
+        return resultNode;
     }
 
     private ObjectNode cashWithdrawal(final CommandInput commandInput) {
@@ -415,6 +442,130 @@ public final class CommandRunner {
     }
 
     private ObjectNode acceptSplitPayment(final CommandInput commandInput) {
+        final int timestamp = commandInput.getTimestamp();
+
+        final String result = Bank.getInstance().acceptSplitPayment(commandInput.getEmail());
+
+        if (result == null) {
+            return null;
+        }
+
+        final ObjectNode resultNode = objectMapper.createObjectNode();
+        resultNode.put("command", "acceptSplitPayment");
+
+        final ObjectNode outputNode = objectMapper.createObjectNode();
+        outputNode.put("timestamp", timestamp);
+        outputNode.put("description", result);
+
+        resultNode.set("output", outputNode);
+
+        resultNode.put("timestamp", timestamp);
+
+        return resultNode;
+    }
+
+    private ObjectNode rejectSplitPayment(final CommandInput commandInput) {
+        final int timestamp = commandInput.getTimestamp();
+
+        final String result = Bank.getInstance().rejectSplitPayment(commandInput.getEmail());
+
+        if (result == null) {
+            return null;
+        }
+
+        final ObjectNode resultNode = objectMapper.createObjectNode();
+        resultNode.put("command", "rejectSplitPayment");
+
+        final ObjectNode outputNode = objectMapper.createObjectNode();
+        outputNode.put("timestamp", timestamp);
+        outputNode.put("description", result);
+
+        resultNode.set("output", outputNode);
+
+        resultNode.put("timestamp", timestamp);
+
+        return resultNode;
+    }
+
+    private ObjectNode addNewBusinessAssociate(final CommandInput commandInput) {
+        final String iban = commandInput.getAccount();
+        final String role = commandInput.getRole();
+        final String email = commandInput.getEmail();
+
+        Bank.getInstance().addNewBusinessAssociate(iban, role, email);
+
         return null;
+    }
+
+    private ObjectNode changeSpendingLimit(final CommandInput commandInput) {
+        final String iban = commandInput.getAccount();
+        final String email = commandInput.getEmail();
+        final double limit = commandInput.getAmount();
+        final int timestamp = commandInput.getTimestamp();
+
+        final String result = Bank.getInstance().changeSpendingLimit(iban, email, limit);
+
+        if (result == null) {
+            return null;
+        }
+
+        final ObjectNode resultNode = objectMapper.createObjectNode();
+        resultNode.put("command", "changeSpendingLimit");
+
+        final ObjectNode outputNode = objectMapper.createObjectNode();
+        outputNode.put("timestamp", timestamp);
+        outputNode.put("description", result);
+
+        resultNode.set("output", outputNode);
+
+        resultNode.put("timestamp", timestamp);
+
+        return resultNode;
+    }
+
+    private ObjectNode changeDepositLimit(final CommandInput commandInput) {
+        final String iban = commandInput.getAccount();
+        final String email = commandInput.getEmail();
+        final double limit = commandInput.getAmount();
+        final int timestamp = commandInput.getTimestamp();
+
+        final String result = Bank.getInstance().changeDepositLimit(iban, email, limit);
+
+        if (result == null) {
+            return null;
+        }
+
+        final ObjectNode resultNode = objectMapper.createObjectNode();
+        resultNode.put("command", "changeDepositLimit");
+
+        final ObjectNode outputNode = objectMapper.createObjectNode();
+        outputNode.put("timestamp", timestamp);
+        outputNode.put("description", result);
+
+        resultNode.set("output", outputNode);
+
+        resultNode.put("timestamp", timestamp);
+
+        return resultNode;
+    }
+
+    private ObjectNode businessReport(final CommandInput commandInput) {
+        final String type = commandInput.getType();
+        final int startTimestamp = commandInput.getStartTimestamp();
+        final int endTimestamp = commandInput.getEndTimestamp();
+        final String account = commandInput.getAccount();
+        final int timestamp = commandInput.getTimestamp();
+
+        final ObjectNode resultNode = objectMapper.createObjectNode();
+
+        resultNode.put("command", "businessReport");
+
+        final ObjectNode outputNode = Bank.getInstance().businessReport(objectMapper, type,
+                startTimestamp, endTimestamp, account);
+
+        resultNode.set("output", outputNode);
+        resultNode.put("timestamp", timestamp);
+
+        return resultNode;
     }
 }

@@ -7,7 +7,8 @@ public final class OnlinePaymentTransaction extends Transaction {
     private final double amount;
     private final String commerciant;
 
-    public OnlinePaymentTransaction(final int timestamp, final double amount, final String commerciant, final String iban) {
+    public OnlinePaymentTransaction(final int timestamp, final double amount,
+                                    final String commerciant, final String iban) {
         super(timestamp, "Card payment", iban);
 
         this.amount = amount;

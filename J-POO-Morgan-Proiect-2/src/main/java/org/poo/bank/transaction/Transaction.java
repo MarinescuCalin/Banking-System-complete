@@ -20,6 +20,7 @@ public class Transaction implements JSONWritable {
     protected String description;
     protected final String iban;
 
+
     public Transaction(final int timestamp, final String description, final String iban) {
         this.timestamp = timestamp;
         this.description = description;

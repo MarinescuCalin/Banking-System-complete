@@ -11,8 +11,9 @@ public final class CardOperationTransaction extends Transaction {
     private final String account;
     private final String cardNumber;
 
-    public CardOperationTransaction(final int timestamp, final String description, final String email,
-                                    final String account, final String cardNumber) {
+    public CardOperationTransaction(final int timestamp, final String description,
+                                    final String email, final String account,
+                                    final String cardNumber) {
         super(timestamp, description, account);
 
         this.email = email;

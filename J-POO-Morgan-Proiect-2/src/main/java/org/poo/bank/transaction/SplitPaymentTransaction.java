@@ -7,18 +7,20 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.List;
 
 public final class SplitPaymentTransaction extends Transaction {
-    private final double amount;
+    private final List<Double> amounts;
+    private final String type;
     private final String currency;
     private final List<String> involvedAccounts;
     private final String error;
 
     public SplitPaymentTransaction(final int timestamp, final String description,
-                                   final double amount, final String currency,
-                                   final List<String> accounts, final String error,
-                                   final String IBAN) {
-        super(timestamp, description, IBAN);
+                                   final List<Double> amounts, final String type,
+                                   final String currency, final List<String> accounts,
+                                   final String error, final String iban) {
+        super(timestamp, description, iban);
 
-        this.amount = amount;
+        this.amounts = amounts;
+        this.type = type;
         this.currency = currency;
         this.involvedAccounts = accounts;
         this.error = error;
@@ -26,13 +28,27 @@ public final class SplitPaymentTransaction extends Transaction {
 
     @Override
     public ObjectNode toObjectNode(final ObjectMapper objectMapper) {
-        ObjectNode result = super.toObjectNode(objectMapper);
+        final ObjectNode result = super.toObjectNode(objectMapper);
 
         result.put("currency", currency);
-        result.put("amount", amount);
+
+
+        if (amounts.size() == 1) {
+            result.put("amount", amounts.getFirst() );
+        } else {
+            final ArrayNode amountArr = objectMapper.createArrayNode();
+            for (final Double amount : amounts) {
+                amountArr.add(amount);
+            }
+
+            result.set("amountForUsers", amountArr);
+        }
+
         if (error != null) {
             result.put("error", error);
         }
+
+        result.put("splitPaymentType", type);
 
         ArrayNode array = objectMapper.createArrayNode();
         for (final String account : involvedAccounts) {

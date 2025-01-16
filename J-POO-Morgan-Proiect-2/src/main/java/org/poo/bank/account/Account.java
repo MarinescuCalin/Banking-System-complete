@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.Getter;
+import lombok.Setter;
 import org.poo.bank.Bank;
 import org.poo.bank.User;
 import org.poo.bank.card.Card;
@@ -13,6 +14,7 @@ import org.poo.bank.commerciante.Cashback;
 import org.poo.bank.commerciante.Commerciante;
 import org.poo.bank.exception.CardFrozenException;
 import org.poo.bank.exception.InsufficientFundsException;
+import org.poo.bank.exception.NotAuthorizedException;
 import org.poo.bank.exception.NotSavingsAccountException;
 import org.poo.bank.transaction.CardOperationTransaction;
 import org.poo.bank.transaction.CashWithdrawTransaction;
@@ -20,10 +22,7 @@ import org.poo.bank.transaction.OnlinePaymentTransaction;
 import org.poo.fileio.JSONWritable;
 import org.poo.utils.Utils;
 
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 
 /**
@@ -34,17 +33,24 @@ import java.util.Optional;
 public abstract class Account implements JSONWritable {
     protected final String iban;
     protected final String currency;
+    protected final String owner;
 
     protected Double balance;
     protected Optional<Double> minBalance;
 
+    @Setter
     protected Map<String, Card> cardsByNumber;
 
-    private final Map<String, Cashback> cashbacks;
+    protected final Map<String, Cashback> cashbacks;
 
-    public Account(final String currency) {
+    @Getter
+    @Setter
+    protected boolean cashbackReceived;
+
+    public Account(final String currency, final String owner) {
         this.iban = Utils.generateIBAN();
         this.currency = currency;
+        this.owner = owner;
 
         this.balance = 0.0;
         this.cashbacks = new HashMap<>();
@@ -52,6 +58,8 @@ public abstract class Account implements JSONWritable {
         this.cardsByNumber = new LinkedHashMap<>();
 
         this.minBalance = Optional.empty();
+
+        this.cashbackReceived = false;
     }
 
     /**
@@ -99,53 +107,63 @@ public abstract class Account implements JSONWritable {
     }
 
 
-    /**
-     * Adds funds to the account.
-     *
-     * @param amount the amount to add.
-     */
-    public void addFunds(final double amount) {
+    public boolean addFunds(final double amount, final User user, final int timestamp) {
+        return true;
+    }
+
+    public boolean removeFunds(final double amount, final User user, final int timestamp) {
+        return true;
+    }
+
+    public void increaseBalance(final double amount) {
         balance += amount;
-        balance = Math.round(balance * 100.0) / 100.0;
     }
 
-    public void removeFunds(final double amount) {
+    public void decreaseBalance(final double amount) {
         balance -= amount;
-        balance = Math.round(balance * 100.0) / 100.0;
     }
 
-    /**
-     * Sends funds to another account.
-     * Converts currency if needed and ensures sufficient funds are available.
-     *
-     * @param user     the user sending money.
-     * @param receiver the receiving {@link Account}.
-     * @param amount   the amount to send.
-     * @throws InsufficientFundsException if the account has insufficient funds.
-     */
     public void sendFunds(final User user,
                           final Account receiver,
+                          final Commerciante commerciante,
                           final double amount)
             throws InsufficientFundsException {
         double amountToGet = amount;
-        if (!currency.equals(receiver.getCurrency())) {
-            amountToGet = Bank.getInstance()
-                    .convertCurrency(amount,
-                            this.currency,
-                            receiver.getCurrency());
+        if (receiver != null) {
+            if (!currency.equals(receiver.getCurrency())) {
+                amountToGet = Bank.getInstance()
+                        .convertCurrency(amount,
+                                this.currency,
+                                receiver.getCurrency());
+            }
         }
 
         final double amountInRON = Bank.getInstance().convertCurrency(amount, currency, "RON");
 
-        double amountToSubstract = amount + Bank.getInstance().convertCurrency(user.getCommission(amountInRON), "RON", currency);
+        double amountToSubstract = amount + Bank.getInstance()
+                .convertCurrency(user.getCommission(amountInRON), "RON", currency);
         if (balance - amountToSubstract < 0.0) {
             throw new InsufficientFundsException();
         }
 
-        balance -= amountToSubstract;
-        balance = Math.round(balance * 100.0) / 100.0;
+        if (commerciante != null) {
+            final Cashback cashback = cashbacks.get(commerciante.getType());
+            double amountToCashback = 0.0;
+            if (cashback != null) {
+                amountToCashback = cashback.getPercentage() * 0.01 * amountInRON;
+                cashbacks.remove(commerciante.getType());
+            }
 
-        receiver.addFunds(amountToGet);
+            amountToCashback += commerciante.getCashback(this, user.getPlanName(), amountInRON);
+            final double amountToAdd = Bank.getInstance().convertCurrency(amountToCashback,
+                    "RON", currency);
+            balance += amountToAdd;
+        }
+
+        balance -= amountToSubstract;
+        if (receiver != null) {
+            receiver.balance += amountToGet;
+        }
     }
 
 
@@ -170,10 +188,12 @@ public abstract class Account implements JSONWritable {
             throw new CardFrozenException("The card is frozen");
         }
 
-        final double amountToPay = Bank.getInstance().convertCurrency(amount, otherCurrency, currency);
+        double amountToPay = Bank.getInstance().convertCurrency(amount, otherCurrency, currency);
         final double amountInRON = Bank.getInstance().convertCurrency(amountToPay, currency, "RON");
 
-        double amountToSubstract = amountToPay + Bank.getInstance().convertCurrency(user.getCommission(amountInRON), "RON", currency);
+        final User owner = Bank.getInstance().getUserByEmail(getOwner());
+        final double amountToSubstract = amountToPay + Bank.getInstance()
+                .convertCurrency(owner.getCommission(amountInRON), "RON", currency);
 
         if (balance - amountToSubstract < 0) {
             throw new InsufficientFundsException();
@@ -192,17 +212,24 @@ public abstract class Account implements JSONWritable {
             }
         }
 
+        final boolean can = removeFunds(amountToPay, user, timestamp);
+        if (!can) {
+            return;
+        }
+
         balance -= amountToSubstract;
 
         final Cashback cashback = cashbacks.get(commerciante.getType());
         double amountToCashback = 0.0;
         if (cashback != null) {
             amountToCashback = cashback.getPercentage() * 0.01 * amountInRON;
+            cashbacks.remove(commerciante.getType());
         }
 
         amountToCashback += commerciante.getCashback(this, user.getPlanName(), amountInRON);
-        balance += amountToCashback;
-        balance = Math.round(balance * 100.0) / 100.0;
+        final double amountToAdd = Bank.getInstance().convertCurrency(amountToCashback,
+                "RON", currency);
+        balance += amountToAdd;
 
         user.addTransaction(new OnlinePaymentTransaction(timestamp,
                 amountToPay, commerciante.getName(), iban));
@@ -220,34 +247,64 @@ public abstract class Account implements JSONWritable {
         }
     }
 
+    /**
+     * Performs a cash withdrawal from the account using the specified card.
+     * Converts the withdrawal amount to the account's currency (if needed),
+     * checks if the funds are sufficient,
+     * and ensures the card is not frozen before processing the withdrawal.
+     * Adds a transaction record for the withdrawal after completing the operation.
+     *
+     * @param user      The user performing the withdrawal.
+     * @param card      The card used for the withdrawal.
+     * @param amount    The amount to withdraw in the card's currency.
+     * @param timestamp The timestamp of the withdrawal operation.
+     * @throws InsufficientFundsException if the account balance is insufficient
+     *                                    to cover the withdrawal.
+     * @throws CardFrozenException        if the card is frozen and cannot
+     *                                    be used for the withdrawal.
+     */
     public void cashWithdrawal(final User user, final Card card, final double amount,
-                               final int timestamp) throws InsufficientFundsException, CardFrozenException {
+                               final int timestamp) throws InsufficientFundsException,
+            CardFrozenException {
         double withdrawAmount = Bank.getInstance().convertCurrency(amount, "RON", currency);
-        withdrawAmount += Bank.getInstance().convertCurrency(user.getCommission(amount), "RON", currency);
+        withdrawAmount += Bank.getInstance().convertCurrency(user.getCommission(amount),
+                "RON", currency);
 
-        if (balance < withdrawAmount)
+        if (balance < withdrawAmount) {
             throw new InsufficientFundsException();
+        }
 
         if (card.getStatus().equals("frozen")) {
             throw new CardFrozenException("The card is frozen");
         }
-
         balance -= withdrawAmount;
-        balance = Math.round(balance * 100.0) / 100.0;
+
         user.addTransaction(new CashWithdrawTransaction(timestamp, iban, amount));
     }
 
+    /**
+     * Adds a cashback rule for a specific merchant type to the account.
+     * The cashback rule determines the percentage of cashback the account holder will receive
+     * when making transactions with merchants of the specified type.
+     *
+     * @param commerciantType The type of the merchant (e.g., retail, online store).
+     * @param cashback        The cashback object containing the percentage value.
+     */
     public void addCashback(final String commerciantType, final Cashback cashback) {
         cashbacks.put(commerciantType, cashback);
     }
 
     /**
-     * Deducts the specified amount from the account balance.
+     * Performs a split payment by converting the specified amount to the account's currency and
+     * deducting it from the balance. This method is typically used when paying in installments
+     * or in multiple parts.
      *
-     * @param amount the amount to deduct.
+     * @param amount   The total amount to pay, in the given currency.
+     * @param currency The currency in which the amount is provided.
      */
-    public void splitPay(final double amount) {
-        balance -= amount;
+    public void splitPay(final double amount, final String currency) {
+        double payAmount = Bank.getInstance().convertCurrency(amount, currency, this.currency);
+        balance -= payAmount;
     }
 
     /**
@@ -270,7 +327,7 @@ public abstract class Account implements JSONWritable {
         ObjectNode result = objectMapper.createObjectNode();
 
         result.put("IBAN", iban);
-        result.put("balance", Math.round(balance * 100.0) / 100.0);
+        result.put("balance", balance);
         result.put("currency", currency);
 
         ArrayNode cardArray = result.putArray("cards");
@@ -305,4 +362,24 @@ public abstract class Account implements JSONWritable {
      * @return the interest rate.
      */
     public abstract Double getInterestRate();
+
+    public abstract List<String> getEmployees();
+
+    public abstract List<String> getManagers();
+
+    public abstract Double getSpendingLimit();
+
+    public abstract Double getDepostLimit();
+
+    public abstract List<TransactionInfo> getTransasctionInfo();
+
+    public abstract void addTransactionInfo(double amount, String username, int timestamp);
+
+    public abstract void addManager(String email);
+
+    public abstract void addEmployee(String email);
+
+    public abstract void changeSpendingLimit(String email, double limit) throws NotAuthorizedException;
+
+    public abstract void changeDepositLimit(String email, double limit) throws NotAuthorizedException;
 }

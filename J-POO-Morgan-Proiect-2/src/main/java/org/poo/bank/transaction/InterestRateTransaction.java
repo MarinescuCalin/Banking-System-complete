@@ -3,7 +3,7 @@ package org.poo.bank.transaction;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-public class InterestRateTransaction extends Transaction {
+public final class InterestRateTransaction extends Transaction {
     private final double amount;
     private final String currency;
 
