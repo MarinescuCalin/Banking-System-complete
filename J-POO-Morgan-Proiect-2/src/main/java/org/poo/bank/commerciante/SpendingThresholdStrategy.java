@@ -1,10 +1,6 @@
 package org.poo.bank.commerciante;
 
-import lombok.Getter;
 import org.poo.bank.account.Account;
-
-import java.util.HashMap;
-import java.util.Map;
 
 public final class SpendingThresholdStrategy implements CashbackStrategy {
     private static final double SPENDING_THRESHOLD_500 = 500.0;
@@ -23,41 +19,35 @@ public final class SpendingThresholdStrategy implements CashbackStrategy {
     private static final double CASHBACK_SILVER_100 = 0.003;
     private static final double CASHBACK_GOLD_100 = 0.005;
 
-    @Getter
-    private static final Map<String, Map<String, Double>> spendingInfo = new HashMap<>();
-
     @Override
     public double getCashback(final Account account, final String planType,
                               final Commerciante commerciante, final double amount) {
-        spendingInfo.putIfAbsent(account.getIban(), new HashMap<>());
-        final Map<String, Double> spentPerType = spendingInfo.get(account.getIban());
-        spentPerType.put(commerciante.getType(),
-                spentPerType.getOrDefault(commerciante.getType(), 0.0) + amount);
-        final double totalSpent = spentPerType.get(commerciante.getType());
+        account.setSpending(account.getSpending() + amount);
+        final double totalSpent = account.getSpending();
 
         if (totalSpent >= SPENDING_THRESHOLD_500) {
             return switch (planType) {
-                case "standard", "student" -> CASHBACK_STANDARD_STUDENT_500 * totalSpent;
-                case "silver" -> CASHBACK_SILVER_500 * totalSpent;
-                case "gold" -> CASHBACK_GOLD_500 * totalSpent;
+                case "standard", "student" -> CASHBACK_STANDARD_STUDENT_500 * amount;
+                case "silver" -> CASHBACK_SILVER_500 * amount;
+                case "gold" -> CASHBACK_GOLD_500 * amount;
                 default -> throw new IllegalStateException("Unexpected value: " + planType);
             };
         }
 
         if (totalSpent >= SPENDING_THRESHOLD_300) {
             return switch (planType) {
-                case "standard", "student" -> CASHBACK_STANDARD_STUDENT_300 * totalSpent;
-                case "silver" -> CASHBACK_SILVER_300 * totalSpent;
-                case "gold" -> CASHBACK_GOLD_300 * totalSpent;
+                case "standard", "student" -> CASHBACK_STANDARD_STUDENT_300 * amount;
+                case "silver" -> CASHBACK_SILVER_300 * amount;
+                case "gold" -> CASHBACK_GOLD_300 * amount;
                 default -> throw new IllegalStateException("Unexpected value: " + planType);
             };
         }
 
         if (totalSpent >= SPENDING_THRESHOLD_100) {
             return switch (planType) {
-                case "standard", "student" -> CASHBACK_STANDARD_STUDENT_100 * totalSpent;
-                case "silver" -> CASHBACK_SILVER_100 * totalSpent;
-                case "gold" -> CASHBACK_GOLD_100 * totalSpent;
+                case "standard", "student" -> CASHBACK_STANDARD_STUDENT_100 * amount;
+                case "silver" -> CASHBACK_SILVER_100 * amount;
+                case "gold" -> CASHBACK_GOLD_100 * amount;
                 default -> throw new IllegalStateException("Unexpected value: " + planType);
             };
         }

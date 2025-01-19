@@ -10,7 +10,7 @@ import org.poo.bank.exception.NotSavingsAccountException;
 import java.util.ArrayList;
 import java.util.List;
 
-public class BusinessAccount extends Account {
+public final class BusinessAccount extends Account {
     private double spendingLimit;
     private double depositLimit;
     private final List<String> managers;
@@ -29,11 +29,16 @@ public class BusinessAccount extends Account {
     }
 
     @Override
-    public boolean addFunds(final double amount, final User user, final int timestamp) {
+    public boolean addFunds(final double amount, final User user,
+                            final int timestamp) {
         final String email = user.getEmail();
 
         if (owner.equals(email)) {
             return true;
+        }
+
+        if (!employees.contains(email) && !managers.contains(email)) {
+            return false;
         }
 
         if (employees.contains(email)) {
@@ -42,16 +47,21 @@ public class BusinessAccount extends Account {
             }
         }
 
-        addTransactionInfo(amount, user.getLastName() + " " + user.getFirstName(), timestamp);
+        addTransactionInfo(amount, email, timestamp, null);
         return true;
     }
 
     @Override
-    public boolean removeFunds(final double amount, final User user, final int timestamp) {
+    public boolean removeFunds(final double amount, final User user,
+                               final int timestamp, final String commerciante) {
         final String email = user.getEmail();
 
         if (owner.equals(email)) {
             return true;
+        }
+
+        if (!employees.contains(email) && !managers.contains(email)) {
+            return false;
         }
 
         if (employees.contains(email)) {
@@ -60,7 +70,7 @@ public class BusinessAccount extends Account {
             }
         }
 
-        addTransactionInfo(-amount, user.getLastName() + " " + user.getFirstName(), timestamp);
+        addTransactionInfo(-amount, email, timestamp, commerciante);
         return true;
     }
 
@@ -77,11 +87,6 @@ public class BusinessAccount extends Account {
     @Override
     public double addInterest() throws NotSavingsAccountException {
         throw new NotSavingsAccountException();
-    }
-
-    @Override
-    public Double getInterestRate() {
-        return null;
     }
 
     @Override
@@ -110,17 +115,34 @@ public class BusinessAccount extends Account {
     }
 
     @Override
-    public void addTransactionInfo(final double amount, final String username, final int timestamp) {
-        transactionInfo.add(new TransactionInfo(amount, username, timestamp));
+    public void addTransactionInfo(final double amount, final String email,
+                                   final int timestamp, final String commerciante) {
+        transactionInfo.add(new TransactionInfo(amount, email, timestamp, commerciante));
     }
 
     @Override
     public void addManager(final String email) {
+        if (owner.equals(email)) {
+            return;
+        }
+
+        if (employees.contains(email)) {
+            return;
+        }
+
         managers.add(email);
     }
 
     @Override
     public void addEmployee(final String email) {
+        if (owner.equals(email)) {
+            return;
+        }
+
+        if (managers.contains(email)) {
+            return;
+        }
+
         employees.add(email);
     }
 
@@ -142,6 +164,11 @@ public class BusinessAccount extends Account {
         }
 
         depositLimit = limit;
+    }
+
+    @Override
+    public String getType() {
+        return "business";
     }
 
     @Override

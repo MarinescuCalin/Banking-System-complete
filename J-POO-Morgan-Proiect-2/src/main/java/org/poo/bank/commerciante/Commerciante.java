@@ -14,6 +14,7 @@ public final class Commerciante {
     @Getter
     private final String type;
     private final CashbackStrategy cashback;
+    private double totalReceived;
 
     public Commerciante(final String name, final int id, final String iban,
                         final String type, final String cashbackType) {
@@ -26,6 +27,8 @@ public final class Commerciante {
         } else {
             this.cashback = new SpendingThresholdStrategy();
         }
+
+        this.totalReceived = 0;
     }
 
     public Commerciante(final CommerciantInput commerciantInput) {
@@ -34,6 +37,16 @@ public final class Commerciante {
                 commerciantInput.getCashbackStrategy());
     }
 
+    /**
+     * Calculates the cashback amount for a transaction based on the account, plan type,
+     * and transaction amount.
+     *
+     * @param account  The account associated with the transaction. Must not be null.
+     * @param planType The plan type of the account (e.g., "silver", "gold"). Must not be
+     *                null or empty.
+     * @param amount   The transaction amount. Must be greater than 0.
+     * @return The calculated cashback amount as a {@code double}.
+     */
     public double getCashback(final Account account, final String planType, final double amount) {
         return cashback.getCashback(account, planType, this, amount);
     }

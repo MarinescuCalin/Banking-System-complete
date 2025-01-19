@@ -1,10 +1,6 @@
 package org.poo.bank.commerciante;
 
-import lombok.Getter;
 import org.poo.bank.account.Account;
-
-import java.util.HashMap;
-import java.util.Map;
 
 public final class NumberOfTransactionsStrategy implements CashbackStrategy {
     private static final int TRANSACTIONS_THRESHOLD_10 = 10;
@@ -12,35 +8,29 @@ public final class NumberOfTransactionsStrategy implements CashbackStrategy {
     private static final int TRANSACTIONS_THRESHOLD_2 = 2;
     private static final double PERCENTAGE_MULTIPLIER = 0.01;
 
-    @Getter
-    private static final Map<String, Integer> noTransactions = new HashMap<>();
-
     @Override
     public double getCashback(final Account account, final String planType,
                               final Commerciante commerciante, final double amount) {
-        if (account.isCashbackReceived()) {
-            return 0.0;
-        }
+        final int accountTransactions = account.getNoTransactions() + 1;
+        account.setNoTransactions(accountTransactions);
 
-        final Cashback cashback = account.getCashbacks().get(commerciante.getType());
-        if (cashback != null) {
-            account.setCashbackReceived(true);
-            return cashback.getPercentage() * PERCENTAGE_MULTIPLIER * amount;
-        }
-
-        final int accountTransactions = noTransactions.getOrDefault(account.getIban(), 0);
-        noTransactions.put(account.getIban(), accountTransactions + 1);
-        if (accountTransactions >= TRANSACTIONS_THRESHOLD_10) {
+        if (accountTransactions >= TRANSACTIONS_THRESHOLD_10
+                && !account.getReceivedCashbacks().contains("Tech")) {
+            account.getReceivedCashbacks().add("Tech");
             account.addCashback("Tech", new Cashback(TRANSACTIONS_THRESHOLD_10));
             return 0.0;
         }
 
-        if (accountTransactions >= TRANSACTIONS_THRESHOLD_5) {
+        if (accountTransactions >= TRANSACTIONS_THRESHOLD_5
+                && !account.getReceivedCashbacks().contains("Clothes")) {
+            account.getReceivedCashbacks().add("Clothes");
             account.addCashback("Clothes", new Cashback(TRANSACTIONS_THRESHOLD_5));
             return 0.0;
         }
 
-        if (accountTransactions >= TRANSACTIONS_THRESHOLD_2) {
+        if (accountTransactions >= TRANSACTIONS_THRESHOLD_2
+                && !account.getReceivedCashbacks().contains("Food")) {
+            account.getReceivedCashbacks().add("Food");
             account.addCashback("Food", new Cashback(TRANSACTIONS_THRESHOLD_2));
             return 0.0;
         }

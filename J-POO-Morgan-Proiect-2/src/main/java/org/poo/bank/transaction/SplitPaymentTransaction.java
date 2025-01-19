@@ -34,7 +34,7 @@ public final class SplitPaymentTransaction extends Transaction {
 
 
         if (amounts.size() == 1) {
-            result.put("amount", amounts.getFirst() );
+            result.put("amount", amounts.getFirst());
         } else {
             final ArrayNode amountArr = objectMapper.createArrayNode();
             for (final Double amount : amounts) {
@@ -50,7 +50,7 @@ public final class SplitPaymentTransaction extends Transaction {
 
         result.put("splitPaymentType", type);
 
-        ArrayNode array = objectMapper.createArrayNode();
+        final ArrayNode array = objectMapper.createArrayNode();
         for (final String account : involvedAccounts) {
             array.add(account);
         }

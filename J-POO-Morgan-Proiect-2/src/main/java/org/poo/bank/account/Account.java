@@ -42,10 +42,13 @@ public abstract class Account implements JSONWritable {
     protected Map<String, Card> cardsByNumber;
 
     protected final Map<String, Cashback> cashbacks;
+    protected final Set<String> receivedCashbacks;
 
-    @Getter
     @Setter
-    protected boolean cashbackReceived;
+    protected double spending;
+
+    @Setter
+    protected int noTransactions;
 
     public Account(final String currency, final String owner) {
         this.iban = Utils.generateIBAN();
@@ -53,13 +56,13 @@ public abstract class Account implements JSONWritable {
         this.owner = owner;
 
         this.balance = 0.0;
-        this.cashbacks = new HashMap<>();
-
         this.cardsByNumber = new LinkedHashMap<>();
-
         this.minBalance = Optional.empty();
 
-        this.cashbackReceived = false;
+        this.cashbacks = new HashMap<>();
+        this.receivedCashbacks = new HashSet<>();
+        this.noTransactions = 0;
+        this.spending = 0;
     }
 
     /**
@@ -107,26 +110,79 @@ public abstract class Account implements JSONWritable {
     }
 
 
-    public boolean addFunds(final double amount, final User user, final int timestamp) {
+    /**
+     * Adds funds to the specified user's account.
+     *
+     * @param amount    The amount to be added. Must be greater than 0.
+     * @param user      The user whose account will receive the funds. Must not be null.
+     * @param timestamp The timestamp of the transaction, represented as an integer.
+     * @return {@code true} if the funds were successfully added; {@code false} otherwise.
+     */
+    public boolean addFunds(final double amount, final User user,
+                            final int timestamp) {
         return true;
     }
 
-    public boolean removeFunds(final double amount, final User user, final int timestamp) {
+    /**
+     * Removes funds from the specified user's account.
+     *
+     * @param amount    The amount to be removed. Must be greater than 0.
+     * @param user      The user whose account will be debited. Must not be null.
+     * @param timestamp The timestamp of the transaction, represented as an integer.
+     * @return {@code true} if the funds were successfully removed; {@code false} otherwise.
+     */
+    public boolean removeFunds(final double amount, final User user,
+                               final int timestamp, final String commerciante) {
         return true;
     }
 
+    /**
+     * Increases the balance by the specified amount.
+     *
+     * @param amount The amount to add to the balance. Must be greater than 0.
+     */
     public void increaseBalance(final double amount) {
         balance += amount;
     }
 
+    /**
+     * Decreases the balance by the specified amount.
+     *
+     * @param amount The amount to subtract from the balance. Must be greater than 0.
+     *               Ensure the resulting balance does not go below allowed limits.
+     */
     public void decreaseBalance(final double amount) {
         balance -= amount;
     }
 
+    /**
+     * Transfers funds from the current account to a specified receiver account or
+     * updates the cashback
+     * for a merchant.
+     * <p>
+     * The method performs currency conversion if necessary, applies any applicable cashback,
+     * deducts the required balance including commission fees, and ensures sufficient funds are
+     * available
+     * before completing the transaction. If the transferred amount (in RON) is 300 or greater,
+     * it tracks such transactions for the account owner.
+     * </p>
+     *
+     * @param user          the {@link User} initiating the transfer.
+     * @param receiver      the {@link Account} receiving the funds. If null, no funds are
+     *                     transferred to another account.
+     * @param commerciante  the {@link Commerciante} involved in the transaction. If null,
+     *                     no cashback is applied.
+     * @param amount        the amount to transfer, in the current account's currency.
+     * @param timestamp     the timestamp of the transaction.
+     * @throws InsufficientFundsException if the account balance is insufficient to
+     * cover the amount,
+     *                                    including commission fees.
+     */
     public void sendFunds(final User user,
                           final Account receiver,
                           final Commerciante commerciante,
-                          final double amount)
+                          final double amount,
+                          final int timestamp)
             throws InsufficientFundsException {
         double amountToGet = amount;
         if (receiver != null) {
@@ -140,8 +196,10 @@ public abstract class Account implements JSONWritable {
 
         final double amountInRON = Bank.getInstance().convertCurrency(amount, currency, "RON");
 
+        final User ownerUser = Bank.getInstance().getUserByEmail(getOwner());
+
         double amountToSubstract = amount + Bank.getInstance()
-                .convertCurrency(user.getCommission(amountInRON), "RON", currency);
+                .convertCurrency(ownerUser.getCommission(amountInRON), "RON", currency);
         if (balance - amountToSubstract < 0.0) {
             throw new InsufficientFundsException();
         }
@@ -150,11 +208,12 @@ public abstract class Account implements JSONWritable {
             final Cashback cashback = cashbacks.get(commerciante.getType());
             double amountToCashback = 0.0;
             if (cashback != null) {
-                amountToCashback = cashback.getPercentage() * 0.01 * amountInRON;
+                amountToCashback += cashback.getPercentage() * 0.01 * amountInRON;
                 cashbacks.remove(commerciante.getType());
             }
 
-            amountToCashback += commerciante.getCashback(this, user.getPlanName(), amountInRON);
+            amountToCashback += commerciante.getCashback(this, ownerUser.getPlanName(),
+                    amountInRON);
             final double amountToAdd = Bank.getInstance().convertCurrency(amountToCashback,
                     "RON", currency);
             balance += amountToAdd;
@@ -163,6 +222,10 @@ public abstract class Account implements JSONWritable {
         balance -= amountToSubstract;
         if (receiver != null) {
             receiver.balance += amountToGet;
+        }
+
+        if (amountInRON >= 300) {
+            ownerUser.increaseTransactionsOver300(iban, timestamp);
         }
     }
 
@@ -192,6 +255,7 @@ public abstract class Account implements JSONWritable {
         final double amountInRON = Bank.getInstance().convertCurrency(amountToPay, currency, "RON");
 
         final User owner = Bank.getInstance().getUserByEmail(getOwner());
+
         final double amountToSubstract = amountToPay + Bank.getInstance()
                 .convertCurrency(owner.getCommission(amountInRON), "RON", currency);
 
@@ -212,24 +276,26 @@ public abstract class Account implements JSONWritable {
             }
         }
 
-        final boolean can = removeFunds(amountToPay, user, timestamp);
+        final boolean can = removeFunds(amountToPay, user, timestamp, commerciante.getName());
         if (!can) {
             return;
         }
 
         balance -= amountToSubstract;
 
-        final Cashback cashback = cashbacks.get(commerciante.getType());
-        double amountToCashback = 0.0;
-        if (cashback != null) {
-            amountToCashback = cashback.getPercentage() * 0.01 * amountInRON;
-            cashbacks.remove(commerciante.getType());
-        }
+        if (commerciante != null) {
+            final Cashback cashback = cashbacks.get(commerciante.getType());
+            double amountToCashback = 0.0;
+            if (cashback != null) {
+                amountToCashback = cashback.getPercentage() * 0.01 * amountInRON;
+                cashbacks.remove(commerciante.getType());
+            }
 
-        amountToCashback += commerciante.getCashback(this, user.getPlanName(), amountInRON);
-        final double amountToAdd = Bank.getInstance().convertCurrency(amountToCashback,
-                "RON", currency);
-        balance += amountToAdd;
+            amountToCashback += commerciante.getCashback(this, owner.getPlanName(), amountInRON);
+            final double amountToAdd = Bank.getInstance().convertCurrency(amountToCashback,
+                    "RON", currency);
+            balance += amountToAdd;
+        }
 
         user.addTransaction(new OnlinePaymentTransaction(timestamp,
                 amountToPay, commerciante.getName(), iban));
@@ -244,6 +310,10 @@ public abstract class Account implements JSONWritable {
             user.addTransaction(new CardOperationTransaction(timestamp,
                     "New card created",
                     user.getEmail(), iban, newCard.getCardNumber()));
+        }
+
+        if (amountInRON >= 300) {
+            owner.increaseTransactionsOver300(iban, timestamp);
         }
     }
 
@@ -266,8 +336,11 @@ public abstract class Account implements JSONWritable {
     public void cashWithdrawal(final User user, final Card card, final double amount,
                                final int timestamp) throws InsufficientFundsException,
             CardFrozenException {
+
+        final User ownerUser = Bank.getInstance().getUserByEmail(getOwner());
+
         double withdrawAmount = Bank.getInstance().convertCurrency(amount, "RON", currency);
-        withdrawAmount += Bank.getInstance().convertCurrency(user.getCommission(amount),
+        withdrawAmount += Bank.getInstance().convertCurrency(ownerUser.getCommission(amount),
                 "RON", currency);
 
         if (balance < withdrawAmount) {
@@ -355,31 +428,112 @@ public abstract class Account implements JSONWritable {
      */
     public abstract double addInterest() throws NotSavingsAccountException;
 
+    /**
+     * Retrieves the list of employees.
+     *
+     * @return A list of employee names, or {@code null} if no employees are available.
+     */
+    public List<String> getEmployees() {
+        return null;
+    }
 
     /**
-     * Abstract method to retrieve the interest rate for this account.
+     * Retrieves the list of managers.
      *
-     * @return the interest rate.
+     * @return A list of manager names, or {@code null} if no managers are available.
      */
-    public abstract Double getInterestRate();
+    public List<String> getManagers() {
+        return null;
+    }
 
-    public abstract List<String> getEmployees();
+    /**
+     * Retrieves the spending limit for the account.
+     *
+     * @return The spending limit as a {@code Double}, or {@code null} if not set.
+     */
+    public Double getSpendingLimit() {
+        return null;
+    }
 
-    public abstract List<String> getManagers();
+    /**
+     * Retrieves the deposit limit for the account.
+     *
+     * @return The deposit limit as a {@code Double}, or {@code null} if not set.
+     */
+    public Double getDepostLimit() {
+        return null;
+    }
 
-    public abstract Double getSpendingLimit();
+    /**
+     * Retrieves the transaction information associated with the account.
+     *
+     * @return A list of {@code TransactionInfo} objects, or {@code null}
+     * if no transactions are available.
+     */
+    public List<TransactionInfo> getTransasctionInfo() {
+        return null;
+    }
 
-    public abstract Double getDepostLimit();
+    /**
+     * Adds a transaction record to the account's transaction history.
+     *
+     * @param amount   The amount of the transaction. Must be greater than 0.
+     * @param username The username associated with the transaction. Must not be null or empty.
+     * @param timestamp The timestamp of the transaction.
+     * @param commerciante The name of the commerciante associated with the transaction, or null.
+     */
+    public void addTransactionInfo(final double amount, final String username,
+                                   final int timestamp, final String commerciante) {
 
-    public abstract List<TransactionInfo> getTransasctionInfo();
+    }
 
-    public abstract void addTransactionInfo(double amount, String username, int timestamp);
+    /**
+     * Adds a manager to the account.
+     *
+     * @param email The email of the manager to add. Must not be null or empty.
+     */
+    public void addManager(final String email) {
+    }
 
-    public abstract void addManager(String email);
+    /**
+     * Adds an employee to the account.
+     *
+     * @param email The email of the employee to add. Must not be null or empty.
+     */
+    public void addEmployee(final String email) {
 
-    public abstract void addEmployee(String email);
+    }
 
-    public abstract void changeSpendingLimit(String email, double limit) throws NotAuthorizedException;
+    /**
+     * Changes the spending limit for the account.
+     *
+     * @param email The email of the user requesting the change. Must not be null or empty.
+     * @param limit The new spending limit. Must be greater than 0.
+     * @throws NotAuthorizedException If the user is not authorized to change the spending limit.
+     * @throws UnsupportedOperationException If the operation is not supported.
+     */
+    public void changeSpendingLimit(final String email, final double limit)
+            throws NotAuthorizedException, UnsupportedOperationException {
+        throw new UnsupportedOperationException();
+    }
 
-    public abstract void changeDepositLimit(String email, double limit) throws NotAuthorizedException;
+    /**
+     * Changes the deposit limit for the account.
+     *
+     * @param email The email of the user requesting the change. Must not be null or empty.
+     * @param limit The new deposit limit. Must be greater than 0.
+     * @throws NotAuthorizedException If the user is not authorized to change the deposit limit.
+     * @throws UnsupportedOperationException If the operation is not supported.
+     */
+    public void changeDepositLimit(final String email, final double limit)
+            throws NotAuthorizedException, UnsupportedOperationException {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Retrieves the type of the account.
+     *
+     * @return The type of the account as a {@code String}.
+     */
+    public abstract String getType();
 }

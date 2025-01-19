@@ -9,8 +9,6 @@ import org.poo.bank.account.AccountFactory;
 import org.poo.bank.account.TransactionInfo;
 import org.poo.bank.card.Card;
 import org.poo.bank.commerciante.Commerciante;
-import org.poo.bank.commerciante.NumberOfTransactionsStrategy;
-import org.poo.bank.commerciante.SpendingThresholdStrategy;
 import org.poo.bank.exception.*;
 import org.poo.bank.transaction.*;
 import org.poo.fileio.CommerciantInput;
@@ -81,9 +79,6 @@ public final class Bank {
         this.aliasesToIBAN.clear();
         this.commerciantesByName.clear();
         this.commerciantesByIBAN.clear();
-
-        SpendingThresholdStrategy.getSpendingInfo().clear();
-        NumberOfTransactionsStrategy.getNoTransactions().clear();
 
         for (final UserInput user : users) {
             this.usersByEmail.put(user.getEmail(), new User(user));
@@ -229,7 +224,18 @@ public final class Bank {
         user.createOneTimeCard(iban, timestamp);
     }
 
-    public void addFunds(final String iban, final double amount, final String email, final int timestamp) {
+    /**
+     * Adds funds to the specified account, increasing its balance if the operation is allowed.
+     *
+     * @param iban      The IBAN of the account to which funds are to be added.
+     * @param amount    The amount of money to be added to the account balance.
+     * @param email     The email address of the user performing the operation.
+     * @param timestamp The timestamp of the transaction.
+     * @implNote This method calls {@link Account#addFunds(double, User, int)} to validate
+     * the operation before increasing the balance.
+     */
+    public void addFunds(final String iban, final double amount, final String email,
+                         final int timestamp) {
         final User user = usersByEmail.get(email);
         Account account = accountsByIBAN.get(iban);
         final boolean can = account.addFunds(amount, user, timestamp);
@@ -263,7 +269,7 @@ public final class Bank {
             for (final Account account : user.getAccounts()) {
                 final Card card = account.getCard(cardNumber);
                 if (card != null) {
-                    user.checkFreezeCard(account, card, timestamp);
+                    //user.checkFreezeCard(account, card, timestamp);
                     return null;
                 }
 
@@ -319,7 +325,8 @@ public final class Bank {
      */
     public String sendMoney(final String senderIBAN, final String receiverIBAN,
                             final double amount, final String description, final int timestamp) {
-        final Account senderAccount = accountsByIBAN.get(senderIBAN);
+        final String trueSenderIBAN = aliasesToIBAN.getOrDefault(senderIBAN, senderIBAN);
+        final Account senderAccount = accountsByIBAN.get(trueSenderIBAN);
 
         if (senderAccount == null) {
             return "User not found";
@@ -331,8 +338,8 @@ public final class Bank {
             return "User not found";
         }
 
-        final User user = usersByIBAN.get(senderIBAN);
-        user.sendMoney(senderIBAN, usersByIBAN.get(receiverIBAN),
+        final User user = usersByIBAN.get(trueSenderIBAN);
+        user.sendMoney(trueSenderIBAN, usersByIBAN.get(receiverIBAN),
                 receiverAccount, commerciantesByIBAN.get(receiverIBAN), receiverIBAN,
                 amount, timestamp, description);
         return null;
@@ -503,7 +510,7 @@ public final class Bank {
 
         final List<Transaction> transactions = user.getTransactions();
         final Account account = accountsByIBAN.get(iban);
-        if (account.getInterestRate() != null) {
+        if (account.getType().equals("savings")) {
             final ObjectNode c = objectMapper.createObjectNode();
             c.put("error", "This kind of report is not supported for a saving account");
             return c;
@@ -554,6 +561,18 @@ public final class Bank {
         return result;
     }
 
+    /**
+     * Processes a withdrawal from a savings account to a user's classic account, ensuring
+     * the user meets the minimum age requirement and has sufficient funds.
+     *
+     * @param iban      The IBAN of the savings account to withdraw from.
+     * @param amount    The amount to withdraw, in the specified currency.
+     * @param currency  The currency in which the withdrawal amount is specified.
+     * @param timestamp The timestamp of the withdrawal transaction.
+     *
+     * @throws IllegalArgumentException if the account associated with the IBAN does not exist.
+     *
+    */
     public void withdrawSavings(final String iban, final double amount, final String currency,
                                 final int timestamp) {
         final Account account = accountsByIBAN.get(iban);
@@ -569,7 +588,7 @@ public final class Bank {
 
         Account destAccount = null;
         for (final Account acc : user.getAccounts()) {
-            if (acc.getInterestRate() == null && acc.getCurrency().equals(currency)) {
+            if (acc.getType().equals("classic") && acc.getCurrency().equals(currency)) {
                 destAccount = acc;
                 break;
             }
@@ -639,6 +658,14 @@ public final class Bank {
         return null;
     }
 
+    /**
+     * Accepts a pending split payment for the user identified by their email address.
+     *
+     * @param email The email address of the user who is accepting the split payment.
+     * @return A message indicating the result of the operation:
+     * - {@code "User not found"} if the user does not exist.
+     * - {@code null} if the operation was successful.
+     */
     public String acceptSplitPayment(final String email) {
         final User user = usersByEmail.get(email);
 
@@ -651,6 +678,14 @@ public final class Bank {
         return null;
     }
 
+    /**
+     * Rejects a pending split payment for the user identified by their email address.
+     *
+     * @param email The email address of the user who is rejecting the split payment.
+     * @return A message indicating the result of the operation:
+     * - {@code "User not found"} if the user does not exist.
+     * - {@code null} if the operation was successful.
+     */
     public String rejectSplitPayment(final String email) {
         final User user = usersByEmail.get(email);
 
@@ -663,6 +698,16 @@ public final class Bank {
         return null;
     }
 
+    /**
+     * Adds a new business associate to the specified account with a given role.
+     *
+     * @param iban  The IBAN of the account to which the business associate will be added.
+     * @param role  The role of the associate. Supported roles are:
+     *              - {@code "employee"}: Grants employee-level access to the account.
+     *              - {@code "manager"}: Grants manager-level access to the account.
+     *              Invalid roles will be ignored.
+     * @param email The email address of the user to be added as a business associate.
+     */
     public void addNewBusinessAssociate(final String iban, final String role, final String email) {
         final Account account = accountsByIBAN.get(iban);
         final User user = usersByEmail.get(email);
@@ -681,6 +726,19 @@ public final class Bank {
         user.addAccount(account, -1);
     }
 
+    /**
+     * Changes the spending limit for a business account.
+     *
+     * @param iban  The IBAN of the account for which the spending limit is to be changed.
+     * @param email The email of the user requesting the change.
+     * @param limit The new spending limit to be set.
+     * @return A message indicating the result of the operation:
+     * - {@code "This is not a business account"} if the account does not
+     * support spending limits.
+     * - {@code "You must be owner in order to change spending limit."} if
+     * the user is not authorized.
+     * - {@code null} if the operation was successful.
+     */
     public String changeSpendingLimit(final String iban, final String email, final double limit) {
         final Account account = accountsByIBAN.get(iban);
         try {
@@ -694,6 +752,19 @@ public final class Bank {
         return null;
     }
 
+    /**
+     * Changes the deposit limit for a business account.
+     *
+     * @param iban  The IBAN of the account for which the deposit limit is to be changed.
+     * @param email The email of the user requesting the change.
+     * @param limit The new deposit limit to be set.
+     * @return A message indicating the result of the operation:
+     * - {@code "This is not a business account"} if the account does not support
+     * deposit limits.
+     * - {@code "You must be owner in order to change spending limit."} if the user
+     * is not authorized.
+     * - {@code null} if the operation was successful.
+     */
     public String changeDepositLimit(final String iban, final String email, final double limit) {
         final Account account = accountsByIBAN.get(iban);
         try {
@@ -701,7 +772,7 @@ public final class Bank {
         } catch (final UnsupportedOperationException e) {
             return "This is not a business account";
         } catch (final NotAuthorizedException e) {
-            return "You must be owner in order to change spending limit.";
+            return "You must be owner in order to change deposit limit.";
         }
 
         return null;
@@ -719,60 +790,109 @@ public final class Bank {
         resultNode.put("currency", account.getCurrency());
         resultNode.put("spending limit", account.getSpendingLimit());
         resultNode.put("deposit limit", account.getDepostLimit());
-
-        double totalDeposited = 0.0;
-        double totalSpent = 0.0;
-        final Map<String, Double> deposited = new HashMap<>();
-        final Map<String, Double> spent = new HashMap<>();
-        for (final TransactionInfo transactionInfo : account.getTransasctionInfo()) {
-            final int timestamp = transactionInfo.getTimestamp();
-            if (timestamp < startTimestamp || timestamp > endTimestamp) {
-                continue;
-            }
-
-            final String username = transactionInfo.getUsername();
-            final double amount = transactionInfo.getAmount();
-
-            if (amount < 0) {
-                totalSpent -= amount;
-                spent.put(username, spent.getOrDefault(username, 0.0) - amount);
-            } else {
-                totalDeposited += amount;
-                deposited.put(username, deposited.getOrDefault(username, 0.0) + amount);
-            }
-        }
-
-        final ArrayNode employeesArr = objectMapper.createArrayNode();
-        for (final String employee : account.getEmployees().stream().sorted().toList()) {
-            final User user = usersByEmail.get(employee);
-            final String username = user.getLastName() + " " + user.getFirstName();
-
-            final ObjectNode node = objectMapper.createObjectNode();
-            node.put("deposited", deposited.getOrDefault(username, 0.0));
-            node.put("spent", spent.getOrDefault(username, 0.0));
-            node.put("username", username);
-
-            employeesArr.add(node);
-        }
-
-        final ArrayNode managersArr = objectMapper.createArrayNode();
-        for (final String manager : account.getManagers().stream().sorted().toList()) {
-            final User user = usersByEmail.get(manager);
-            final String username = user.getLastName() + " " + user.getFirstName();
-
-            final ObjectNode node = objectMapper.createObjectNode();
-            node.put("deposited", deposited.getOrDefault(username, 0.0));
-            node.put("spent", spent.getOrDefault(username, 0.0));
-            node.put("username", username);
-
-            managersArr.add(node);
-        }
-
-        resultNode.set("employees", employeesArr);
-        resultNode.set("managers", managersArr);
         resultNode.put("statistics type", type);
-        resultNode.put("total deposited", totalDeposited);
-        resultNode.put("total spent", totalSpent);
+
+        if (type.equals("commerciant")) {
+            final ArrayNode commerciants = objectMapper.createArrayNode();
+            resultNode.set("commerciants", commerciants);
+
+            final List<TransactionInfo> transactions = account.getTransasctionInfo().stream()
+                    .filter(tx -> tx.getTimestamp() >= startTimestamp && tx.getTimestamp() <= endTimestamp)
+                    .toList();
+
+            final Map<String, List<TransactionInfo>> transactionsByCommerciante =
+                    transactions.stream().filter(tx -> tx.getCommerciante() != null)
+                    .collect(Collectors.groupingBy(TransactionInfo::getCommerciante));
+
+            final List<String> sortedMerchantNames = new ArrayList<>(transactionsByCommerciante
+                    .keySet());
+            Collections.sort(sortedMerchantNames);
+
+            for (final String merchantName : sortedMerchantNames) {
+                final List<TransactionInfo> merchantTransactions = transactionsByCommerciante
+                        .get(merchantName);
+
+                final ObjectNode merchantNode = objectMapper.createObjectNode();
+                merchantNode.put("commerciant", merchantName);
+
+                double totalReceived = merchantTransactions.stream()
+                        .mapToDouble(tx -> Math.abs(tx.getAmount()))
+                        .sum();
+                merchantNode.put("total received", totalReceived);
+
+                final ArrayNode employeesNode = objectMapper.createArrayNode();
+                merchantTransactions.forEach(tx -> {
+                    User user = Bank.getInstance().getUserByEmail(tx.getEmail());
+                    String username = user.getLastName() + " " + user.getFirstName();
+                    employeesNode.add(username);
+                });
+                merchantNode.set("employees", employeesNode);
+
+                final ArrayNode managersNode = objectMapper.createArrayNode();
+                merchantNode.set("managers", managersNode);
+
+                commerciants.add(merchantNode);
+            }
+        } else {
+            double totalDeposited = 0.0;
+            double totalSpent = 0.0;
+            final Map<String, Double> deposited = new HashMap<>();
+            final Map<String, Double> spent = new HashMap<>();
+            for (final TransactionInfo transactionInfo : account.getTransasctionInfo()) {
+                final int timestamp = transactionInfo.getTimestamp();
+                if (timestamp < startTimestamp || timestamp > endTimestamp) {
+                    continue;
+                }
+
+                final String email = transactionInfo.getEmail();
+                if (account.getOwner().equals(email)) {
+                    continue;
+                }
+
+                final double amount = transactionInfo.getAmount();
+                final User user = usersByEmail.get(email);
+                final String username = user.getLastName() + " " + user.getFirstName();
+
+                if (amount < 0) {
+                    totalSpent -= amount;
+                    spent.put(username, spent.getOrDefault(username, 0.0) - amount);
+                } else {
+                    totalDeposited += amount;
+                    deposited.put(username, deposited.getOrDefault(username, 0.0) + amount);
+                }
+            }
+
+            final ArrayNode employeesArr = objectMapper.createArrayNode();
+            for (final String employee : account.getEmployees()) {
+                final User user = usersByEmail.get(employee);
+                final String username = user.getLastName() + " " + user.getFirstName();
+
+                final ObjectNode node = objectMapper.createObjectNode();
+                node.put("deposited", deposited.getOrDefault(username, 0.0));
+                node.put("spent", spent.getOrDefault(username, 0.0));
+                node.put("username", username);
+
+                employeesArr.add(node);
+            }
+
+            final ArrayNode managersArr = objectMapper.createArrayNode();
+            for (final String manager : account.getManagers()) {
+                final User user = usersByEmail.get(manager);
+                final String username = user.getLastName() + " " + user.getFirstName();
+
+                final ObjectNode node = objectMapper.createObjectNode();
+                node.put("deposited", deposited.getOrDefault(username, 0.0));
+                node.put("spent", spent.getOrDefault(username, 0.0));
+                node.put("username", username);
+
+                managersArr.add(node);
+            }
+
+            resultNode.set("employees", employeesArr);
+            resultNode.set("managers", managersArr);
+            resultNode.put("total deposited", totalDeposited);
+            resultNode.put("total spent", totalSpent);
+        }
 
         return resultNode;
     }
@@ -798,6 +918,14 @@ public final class Bank {
         return new ArrayList<>(usersByEmail.values());
     }
 
+    /**
+     * Retrieves a user by their email address.
+     *
+     * @param email The email address of the user to be retrieved.
+     *              This should be a valid and registered email.
+     * @return The {@link User} associated with the given email address,
+     * or {@code null} if no user is found.
+     */
     public User getUserByEmail(final String email) {
         return usersByEmail.get(email);
     }

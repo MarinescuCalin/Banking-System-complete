@@ -8,6 +8,7 @@ import org.poo.bank.account.Account;
 import org.poo.bank.card.Card;
 import org.poo.bank.commerciante.Commerciante;
 import org.poo.bank.exception.*;
+import org.poo.bank.plan.GoldStrategy;
 import org.poo.bank.plan.PlanFactory;
 import org.poo.bank.plan.PlanStrategy;
 import org.poo.bank.transaction.*;
@@ -36,6 +37,7 @@ public final class User implements JSONWritable {
     @Getter
     private final String birthDate;
     private final String occupation;
+    private int transactionsOver300;
 
     private PlanStrategy plan;
     private final Map<String, Account> accountsByIBAN;
@@ -63,6 +65,7 @@ public final class User implements JSONWritable {
         }
 
         splitPayments = new LinkedList<>();
+        this.transactionsOver300 = 0;
     }
 
     public User(final UserInput userInput) {
@@ -197,6 +200,20 @@ public final class User implements JSONWritable {
         }
     }
 
+    /**
+     * Handles the process of sending money from one account to another.
+     * The method performs fund transfer, handles currency conversion (if necessary),
+     * and logs the transaction details for both the sender and receiver.
+     *
+     * @param senderIBAN      The IBAN of the sender's account.
+     * @param receiverUser    The recipient user (if applicable).
+     * @param receiverAccount The recipient's account (can be null for external transfers).
+     * @param commerciante    The merchant involved in the transaction (if applicable).
+     * @param receiverIBAN    The IBAN of the recipient's account.
+     * @param amount          The amount of money to be sent.
+     * @param timestamp       The timestamp of the transaction.
+     * @param description     A description of the transaction.
+     */
     public void sendMoney(final String senderIBAN, final User receiverUser,
                           final Account receiverAccount, final Commerciante commerciante,
                           final String receiverIBAN, final double amount, final int timestamp,
@@ -204,7 +221,7 @@ public final class User implements JSONWritable {
         final Account senderAccount = accountsByIBAN.get(senderIBAN);
 
         try {
-            senderAccount.sendFunds(this, receiverAccount, commerciante, amount);
+            senderAccount.sendFunds(this, receiverAccount, commerciante, amount, timestamp);
         } catch (InsufficientFundsException e) {
             addTransaction(new Transaction(timestamp, e.getMessage(), senderIBAN));
             return;
@@ -310,7 +327,8 @@ public final class User implements JSONWritable {
     public void upgradePlan(final String iban, final String planType, final int timestamp) {
         final String currentPlan = getPlanName();
         if (planType.equals(currentPlan)) {
-            addTransaction(new Transaction(timestamp, "The user already has the " + planType + " plan.", iban));
+            addTransaction(new Transaction(timestamp,
+                    "The user already has the " + planType + " plan.", iban));
             return;
         }
 
@@ -340,6 +358,10 @@ public final class User implements JSONWritable {
         account.decreaseBalance(amount);
         plan = PlanFactory.createPlan(planType);
         addTransaction(new UpgradePlanTransaction(timestamp, iban, planType));
+
+        for (final Account acc : accountsByIBAN.values()) {
+            acc.setSpending(0.0);
+        }
     }
 
     /**
@@ -388,7 +410,8 @@ public final class User implements JSONWritable {
      * Iterates through the user's accounts to locate the account holding the card.
      *
      * @param cardNumber the number of the card to locate.
-     * @return the {@link Account} that contains the card, or {@code null} if no account holds the card.
+     * @return the {@link Account} that contains the card, or {@code null} if
+     * no account holds the card.
      */
     private Account findAccountWithCard(final String cardNumber) {
         for (final Account account : accountsByIBAN.values()) {
@@ -471,6 +494,25 @@ public final class User implements JSONWritable {
      */
     public void addTransaction(final Transaction transaction) {
         transactions.add(transaction);
+    }
+
+
+    public void increaseTransactionsOver300(final String iban, final int timestamp) {
+        if (getPlanName().equals("gold")) {
+            return;
+        }
+
+        transactionsOver300++;
+        if (transactionsOver300 >= 5 && getPlanName().equals("silver")) {
+            plan = new GoldStrategy();
+            for (final Account acc : accountsByIBAN.values()) {
+                if (acc.getOwner().equals(email)) {
+                    acc.setSpending(0.0);
+                }
+            }
+
+            addTransaction(new UpgradePlanTransaction(timestamp, iban, "gold"));
+        }
     }
 
     @Override

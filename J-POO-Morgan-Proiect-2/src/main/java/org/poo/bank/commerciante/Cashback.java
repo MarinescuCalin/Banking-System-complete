@@ -3,7 +3,7 @@ package org.poo.bank.commerciante;
 import lombok.Getter;
 
 @Getter
-public class Cashback {
+public final class Cashback {
     private final double percentage;
 
     public Cashback(final double percentage) {
