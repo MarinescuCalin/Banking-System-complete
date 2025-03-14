@@ -1,4 +1,5 @@
-# Banking-System-pt2
+# Banking-System-complete
+
 Ca design patterns am folosit singleton factory builder observer si strategy.
 
 Am adaugat clasele si functionalitatile implementate in etapa 1
